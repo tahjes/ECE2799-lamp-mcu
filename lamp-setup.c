@@ -8,11 +8,11 @@
 // DIR A and B for current flow
 
 // Transitions:
-// IDLE → CONNECT_LED if sensor tapped
+// IDLE → CONNECT_LED if sensor has been tapped/slid
 // CONNECT_LED → ON if successful installation of CoB
-// OR CONNECT_LED → REVERSE_POLARITY if fault
+// OR CONNECT_LED → REVERSE_POLARITY if fault detected
 // POLARITY REVERSE STATE → CONNECT_LED if fixed
-// REVERSE_POLARITY → ERROR if second fault
+// REVERSE_POLARITY → ERROR if fault status after flipping polarity
 // ON → DISCONNECT_LED if tapped again
 // ON → ON if slide (adjust PWM)
 // DISCONNECT_LED → IDLE after disconnection
@@ -20,10 +20,12 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
+// #include "hardware/i2c.h"
 #include "hardware/adc.h"
 #include "hardware/pwm.h"
 #define ANALOG_IN 34 // GP28
 #define PIN_FAULT 32 // GP27 (power supply fault pin)
+#define TEMP_IN 0 // Temp sensor input for CoB holder
 #define DIR_A 31 // GP26 (power supply direct)
 #define DIR_B 29 // GP22 
 #define PWM_OUT 7 // GP5
@@ -32,7 +34,7 @@
 typedef enum {
     STATE_IDLE,
     STATE_CONN,
-    STATE_POL, // reverse polarity state
+    STATE_POL, 
     STATE_ERR,
     STATE_ON,
     STATE_DISCONNECT
@@ -40,14 +42,22 @@ typedef enum {
 
 // globals 
 bool tapped = 0; // tapped status for sensor input
-bool fault_status = 0; // flags status 
+bool fault_status = 0; // flags status of fault
 
-void check_sensor();
-void check_fault();
+// Previous Implementation: Functions are constantly polling, especially when they don't need to
+// The only function that needs to be polled is the sensor input
+// Strict timing unneeded for sensor input, however it will be the case for temp sensor and fault pin
+void check_sensor(); 
+// void check_fault();
+void fault_callback(); // callback function for fault interrupt
+// void temp_callback();
 void reverse_polarity();
 
 int main()
 {
+
+    stdio_init_all();
+
     /* Hardware Initialization */
     // --- fault detection input ---
     gpio_init(PIN_FAULT);
@@ -59,6 +69,12 @@ int main()
     gpio_set_dir(DIR_A, GPIO_OUT);
     gpio_init(DIR_B);
     gpio_set_dir(DIR_B, GPIO_OUT);
+
+    // enables interrupts on pin and associates a callback function that executes when int. occurs
+    gpio_set_irq_enabled_with_callback(PIN_FAULT, GPIO_IRQ_EDGE_FALL, true, fault_callback);
+
+    // temperature sensor interrupt
+    // gpio_set_irq_enabled_with_callback(TEMP_IN, GPIO_IRQ_EDGE_RISE, true, temp_callback);
 
     // set initial Polarity (Anode goes to positive)
     gpio_put(DIR_A, 0);
@@ -78,9 +94,9 @@ int main()
     State currentState = STATE_IDLE;
 
     while(1){
-        // constantly checking the sensor
+        // constantly checking the sensor and fault pin
         check_sensor();
-        check_fault();
+        // check_fault();
         // define the conditions for each state
         switch(currentState) {
             case STATE_IDLE:
@@ -97,14 +113,13 @@ int main()
                 // otherwise move to ON state
                 else {
                     currentState = STATE_ON;
-        
                 }
                 break;
             case STATE_POL:
                 // call function to switch polarity
                 reverse_polarity();
                 sleep_ms(50);
-                check_fault();
+                // check_fault();
 
                 // No fault, turn on LED
                 if (!fault_status){
@@ -117,9 +132,7 @@ int main()
                 break;                
             case STATE_ERR:
                 // print error message
-                printf("Error occurred! No CoB installed or not functional");
-                // implement a delay
-                sleep_ms(100);
+                printf("No CoB installed or not functional");
                 // return to idle
                 currentState = STATE_IDLE;
                 break;
@@ -140,7 +153,7 @@ int main()
 }
 
 // function definitions
-// reads raw data coming from the ADC pin
+// reads raw data coming from sensor via I2C (or ADC in this case)
 void check_sensor(){
     uint16_t adc_value = adc_read();
 
@@ -154,8 +167,8 @@ void check_sensor(){
     }
 }
 
-// check status of the fault pin
-void check_fault(){
+// used instead of polling for fault status from check_fault
+void fault_callback(uint gpio, uint32_t events){
     bool fault = !gpio_get(PIN_FAULT); // fault pin is set as active low
     // Set status as fault if pin is low
     if (fault){
@@ -167,8 +180,13 @@ void check_fault(){
     }
 }
 
+// void temp_callback(uint gpio, uint32_t events){
+//     // 
+// };
+
 // reverse polarity in event of a fault
 void reverse_polarity(){
+    
     // Anode is set to Positive
     if ((gpio_get(DIR_A) == 0) && (gpio_get(DIR_B) == 1)){
         gpio_put(DIR_A, 1);
@@ -179,6 +197,19 @@ void reverse_polarity(){
         gpio_put(DIR_A, 0);
         gpio_put(DIR_B, 1);
     }
+    
 }
 
 
+// // check status of the fault pin
+// void check_fault(){
+//     bool fault = !gpio_get(PIN_FAULT); // fault pin is set as active low
+//     // Set status as fault if pin is low
+//     if (fault){
+//         fault_status = 1;
+//     }
+//     // otherwise no fault detected
+//     else{
+//         fault_status = 0;
+//     }
+// }
