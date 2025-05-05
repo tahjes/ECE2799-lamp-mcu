@@ -42,16 +42,12 @@ typedef enum {
 State currentState = STATE_IDLE;
 
 // // Function prototypes
-// void fault_callback();
 void reverse_polarity();
 
 // Map function to scale for PWM output
 uint16_t customMap(uint16_t x, uint16_t in_min, uint16_t in_max, uint16_t out_min, uint16_t out_max) {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-
-// Globals
-// volatile bool fault_status = 0; // used in ISR - volatile
 
 // Sensor initialization
 void setup() {
@@ -75,7 +71,7 @@ void setup() {
   PD_UFP.init(FUSB302_INT_PIN, PD_POWER_OPTION_MAX_20V);
 
   // Setup pins
-  // pinMode(PIN_FAULT, INPUT_PULLUP); // fault pin for PSU
+  pinMode(PWM_OUT, OUTPUT);
   pinMode(DIR_A, OUTPUT);
   pinMode(DIR_B, OUTPUT);
   pinMode(CURRENT_PIN, INPUT);
@@ -86,8 +82,6 @@ void setup() {
   pwm_set_clkdiv(pwm_gpio_to_slice_num(PWM_OUT), 1.0f); // Set clock divider to 1 (no prescaler)
   gpio_set_function(PWM_OUT, GPIO_FUNC_PWM); // Set the GPIO function to PWM
 
-  // attachInterrupt(digitalPinToInterrupt(PIN_FAULT), fault_callback, FALLING);
-
   // anode goes to positive
   digitalWrite(DIR_A, HIGH);
   digitalWrite(DIR_B, LOW);
@@ -95,7 +89,7 @@ void setup() {
 }
 
 void loop() {
-  //delay(50); // 20 Hz read rate
+  // delay(50); // 20 Hz read rate
   trillSensor.read();
 
   PD_UFP.run();
@@ -150,11 +144,11 @@ void loop() {
       break;
     case STATE_CONN:
       pwm_set_enabled(pwm_gpio_to_slice_num(PWM_OUT), true); // Enable PWM
-      pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), 10000);
+      pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), 8000);
       delay(100); // wait for PWM to stabilize
       // check if current is flowing
       read_current = analogRead(CURRENT_PIN);
-      if (read_current < (0.26 / 3.3) * 1023) { // 0.26V out of 3.3V, scaled to ADC range
+      if (read_current < (0.3 / 3.3) * 1023) { // 0.3V out of 3.3V, scaled to ADC range
         // Serial.println("Polarity check failed");
         // reverse polarity
         reverse_polarity();
@@ -179,7 +173,7 @@ void loop() {
       break;
     case STATE_DISCONNECT:
       // Serial.println("State: DISCONNECT");
-      pwm_set_enabled(pwm_gpio_to_slice_num(PWM_OUT), false); // Disable PWM
+      pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), 0); // Disableo utput
       // // consider disconnecting the LED entirely
       // digitalWrite(DIR_A, LOW);
       // digitalWrite(DIR_B, LOW);
