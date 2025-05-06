@@ -12,8 +12,15 @@ PD_UFP_c PD_UFP;
 #define DIR_B 1
 #define PWM_OUT 2
 #define FUSB302_INT_PIN 3
-#define TEMP_PIN A0
-#define CURRENT_PIN A1
+#define TEMP_PIN A1
+#define CURRENT_PIN A0
+
+#define SERIESRESISTOR 100000 // resistor in series with the thermistor
+#define THERMISTORNOMINAL 105000 // resistance at nominal temperature
+#define TEMPERATURENOMINAL 25 // temp. for nominal resistance
+#define BCOEFFICIENT 4190 // B coefficient of the thermistor
+#define SOFT_TEMP_LIMIT 50 // soft limit for temperature
+#define HARD_TEMP_LIMIT 60 // hard limit for temperature
 
 boolean touchActive = false;
 float lastTouchPos = 0; 
@@ -34,12 +41,14 @@ typedef enum {
     STATE_IDLE,
     STATE_CONN,
     STATE_POL, 
-    STATE_ERR,
+    STATE_OVTEMP,
     STATE_ON,
     STATE_DISCONNECT
 } State;
 
+// global initial state
 State currentState = STATE_IDLE;
+int pwmVal = 0;
 
 // // Function prototypes
 void reverse_polarity();
@@ -75,6 +84,7 @@ void setup() {
   pinMode(DIR_A, OUTPUT);
   pinMode(DIR_B, OUTPUT);
   pinMode(CURRENT_PIN, INPUT);
+  pinMode(TEMP_PIN, INPUT);
 
   // Configure PWM_OUT for 16-bit PWM generation on RP2040 with no prescaler (~1.9 kHz frequency)
   pwm_set_wrap(pwm_gpio_to_slice_num(PWM_OUT), 65535); // Set PWM resolution to 16 bits
@@ -133,6 +143,18 @@ void loop() {
 
   }
 
+  float temperature;
+  temperature = analogRead(TEMP_PIN); // read the thermistor value
+  temperature = (SERIESRESISTOR / ((1023 / temperature) - 1)) / THERMISTORNOMINAL; // R/Ro
+  temperature= log(temperature);                  // ln(R/Ro)
+  temperature /= BCOEFFICIENT;                   // 1/B * ln(R/Ro)
+  temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
+  temperature = 1.0 / temperature;                 // Invert
+  temperature -= 273.15;                         // convert absolute temp to C
+  // Serial.print("Temperature "); 
+  // Serial.print(temperature);
+  // Serial.println(" *C");
+
   // state machine
   switch (currentState) {
     case STATE_IDLE: 
@@ -162,13 +184,28 @@ void loop() {
     // update pwm duty when touch is detected
       if (currentTouchPos >= 0){
         // map the touch position to a PWM value
-        int pwmVal = customMap(int(currentTouchPos), 0, 3200, minPWM, maxPWM);
+        pwmVal = customMap(int(currentTouchPos), 0, 3200, minPWM, maxPWM);
         pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), pwmVal);
       }
 
       if (tapCount > 1){
         currentState = STATE_DISCONNECT;
         tapCount = 0;
+      }
+
+      else if (temperature > SOFT_TEMP_LIMIT) {
+        currentState = STATE_OVTEMP;
+        int lowerPWM = customMap(500, 0, 3200, minPWM, maxPWM);
+        // Flash the LED to indicate over temperature
+        for (int i = 0; i < 2; i++) {
+          pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), lowerPWM);
+          delay(500); // Delay for visibility
+          pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), pwmVal);
+          delay(500); // Delay for visibility
+        }
+
+        pwm_set_chan_level(pwm_gpio_to_slice_num(PWM_OUT), pwm_gpio_to_channel(PWM_OUT), lowerPWM);
+          // Serial.println("-> Transition: ON to OVTEMP");
       }
       break;
     case STATE_DISCONNECT:
@@ -178,11 +215,20 @@ void loop() {
       // digitalWrite(DIR_A, LOW);
       // digitalWrite(DIR_B, LOW);
       currentState = STATE_IDLE;
+
       break;
-    // case STATE_ERR:
-    //   Serial.println("State: ERROR");
-    //   currentState = STATE_IDLE;
-    //   break;
+    case STATE_OVTEMP:
+      // Serial.println("State: Over Temperature");
+      if (temperature < SOFT_TEMP_LIMIT) {
+        currentState = STATE_ON;
+        // Serial.println("-> Transition: OVTEMP to ON");
+      }
+      else if (tapCount > 1 || temperature > HARD_TEMP_LIMIT) {
+        // Serial.println("-> Transition: OVTEMP to DISCONNECT");
+        currentState = STATE_DISCONNECT;
+        tapCount = 0;
+      }
+      break;
   }
 }
 
